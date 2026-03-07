@@ -182,27 +182,41 @@ class ProviderOpenAIOfficial(Provider):
             for key in self.custom_headers:
                 self.custom_headers[key] = str(self.custom_headers[key])
 
+        wire_api = str(provider_config.get("wire_api", "chat_completions")).lower()
+        client_max_retries = provider_config.get("client_max_retries")
+        if client_max_retries is None and wire_api in {"responses", "sub2api"}:
+            # Responses/sub2api already has provider-level retry handling. Avoid SDK retries
+            # stacking on top and turning one bad request into a multi-minute stall.
+            client_max_retries = 0
+        if isinstance(client_max_retries, str):
+            client_max_retries = int(client_max_retries)
+        if client_max_retries is not None:
+            client_max_retries = max(0, int(client_max_retries))
+
+        shared_client_kwargs = {
+            "api_key": self.chosen_api_key,
+            "default_headers": self.custom_headers,
+            "timeout": self.timeout,
+            "http_client": self._create_http_client(provider_config),
+        }
+        if client_max_retries is not None:
+            shared_client_kwargs["max_retries"] = client_max_retries
+
         if "api_version" in provider_config:
             # Using Azure OpenAI API
             self.client = AsyncAzureOpenAI(
-                api_key=self.chosen_api_key,
                 api_version=provider_config.get("api_version", None),
-                default_headers=self.custom_headers,
                 base_url=provider_config.get("api_base", ""),
-                timeout=self.timeout,
-                http_client=self._create_http_client(provider_config),
+                **shared_client_kwargs,
             )
         else:
             # Using OpenAI Official API
             self.client = AsyncOpenAI(
-                api_key=self.chosen_api_key,
                 base_url=provider_config.get("api_base", None),
-                default_headers=self.custom_headers,
-                timeout=self.timeout,
-                http_client=self._create_http_client(provider_config),
+                **shared_client_kwargs,
             )
 
-        self.wire_api = str(provider_config.get("wire_api", "chat_completions")).lower()
+        self.wire_api = wire_api
         self.sub2api_mode = self.wire_api == "sub2api"
         self.use_responses_api = self.wire_api in {"responses", "sub2api"}
         # sub2api compatibility mode has unstable stream semantics on some upstreams.
@@ -2413,6 +2427,7 @@ class ProviderOpenAIOfficial(Provider):
                         func_name_ls.extend(adapter_func_names)
                         tool_call_ids.extend(adapter_tool_call_ids)
                 completion_text = self._strip_sub2api_tool_tag_blocks(completion_text)
+            completion_text = self._trim_optional_followup_offer(completion_text)
             if completion_text:
                 llm_response.result_chain = MessageChain().message(completion_text)
 
@@ -2574,6 +2589,75 @@ class ProviderOpenAIOfficial(Provider):
         # Fallback for other types (int, float, etc.)
         return str(raw_content) if raw_content is not None else ""
 
+    @staticmethod
+    def _looks_like_optional_followup_start(line: str) -> bool:
+        stripped = str(line or "").strip()
+        if not stripped:
+            return False
+        starters = (
+            "\u5982\u679c\u4f60\u613f\u610f",
+            "\u5982\u679c\u4f60\u60f3",
+            "\u5982\u679c\u4f60\u9700\u8981",
+            "\u5982\u679c\u4f60\u8fd8\u60f3",
+            "\u5982\u679c\u4f60\u8981\u662f\u60f3",
+            "\u5982\u679c\u4f60\u5176\u5b9e\u662f\u60f3",
+            "\u8981\u4e0d\u8981",
+            "\u4f60\u8981\u54ea\u4e2a",
+            "\u4f60\u60f3\u8981\u54ea\u4e2a",
+            "\u4f60\u9009\u54ea\u4e2a",
+        )
+        if any(stripped.startswith(prefix) for prefix in starters):
+            return True
+        if stripped.startswith("\u6211\u53ef\u4ee5") and any(token in stripped for token in ("\u7ee7\u7eed", "\u518d", "\u5e2e\u4f60", "\u7ed9\u4f60")):
+            return True
+        if stripped.startswith("\u6211\u8fd8\u80fd") and any(token in stripped for token in ("\u7ee7\u7eed", "\u5e2e\u4f60", "\u7ed9\u4f60")):
+            return True
+        return False
+
+    @classmethod
+    def _trim_optional_followup_offer(cls, text: str | None) -> str:
+        body = str(text or "").strip()
+        if not body:
+            return ""
+        normalized = body.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.rstrip() for line in normalized.split("\n")]
+        non_empty_indices = [idx for idx, line in enumerate(lines) if line.strip()]
+        if len(non_empty_indices) < 2:
+            return body
+
+        for idx in non_empty_indices[1:]:
+            candidate = lines[idx].strip()
+            if not cls._looks_like_optional_followup_start(candidate):
+                continue
+            head = "\n".join(lines[:idx]).rstrip()
+            tail_lines = [line.strip() for line in lines[idx:] if line.strip()]
+            tail_text = "\n".join(tail_lines)
+            if len(tail_text) > 320:
+                continue
+            if not any(
+                token in tail_text
+                for token in (
+                    "\u6211\u53ef\u4ee5",
+                    "\u6211\u8fd8\u80fd",
+                    "\u6211\u4e5f\u53ef\u4ee5",
+                    "\u7ee7\u7eed\u5e2e\u4f60",
+                    "\u7ee7\u7eed\u7ed9\u4f60",
+                    "\u6b63\u5f0f\u8bc1\u660e",
+                    "\u8bc1\u660e\u9898\u683c\u5f0f",
+                    "\u4e25\u683c\u7b97",
+                    "\u4e25\u683c\u8bc1\u660e",
+                    "\u4f60\u8981\u54ea\u4e2a",
+                    "\u4f60\u60f3\u8981\u54ea\u4e2a",
+                    "\u4f60\u9009\u54ea\u4e2a",
+                    "1.",
+                    "2.",
+                    "1\u3001",
+                    "2\u3001",
+                )
+            ):
+                continue
+            return head
+        return body
     async def _parse_openai_completion(
         self, completion: ChatCompletion, tools: ToolSet | None
     ) -> LLMResponse:
@@ -2614,6 +2698,7 @@ class ProviderOpenAIOfficial(Provider):
                         llm_response.tools_call_ids = adapter_tool_call_ids
                 completion_text = self._strip_sub2api_tool_tag_blocks(completion_text)
 
+            completion_text = self._trim_optional_followup_offer(completion_text)
             if completion_text:
                 llm_response.result_chain = MessageChain().message(completion_text)
 
@@ -2975,11 +3060,12 @@ class ProviderOpenAIOfficial(Provider):
         image_fallback_used = False
 
         last_exception = None
-        retry_cnt = 0
+        completed = False
         for retry_cnt in range(max_retries):
             try:
                 self.client.api_key = chosen_key
                 llm_response = await self._query(payloads, func_tool)
+                completed = True
                 break
             except Exception as e:
                 last_exception = e
@@ -3003,9 +3089,10 @@ class ProviderOpenAIOfficial(Provider):
                     image_fallback_used=image_fallback_used,
                 )
                 if success:
+                    completed = True
                     break
 
-        if retry_cnt == max_retries - 1 or llm_response is None:
+        if not completed or llm_response is None:
             logger.error(f"API 调用失败，重试 {max_retries} 次仍然失败。")
             if last_exception is None:
                 raise Exception("未知错误")
@@ -3043,12 +3130,13 @@ class ProviderOpenAIOfficial(Provider):
         image_fallback_used = False
 
         last_exception = None
-        retry_cnt = 0
+        completed = False
         for retry_cnt in range(max_retries):
             try:
                 self.client.api_key = chosen_key
                 async for response in self._query_stream(payloads, func_tool):
                     yield response
+                completed = True
                 break
             except Exception as e:
                 last_exception = e
@@ -3072,9 +3160,10 @@ class ProviderOpenAIOfficial(Provider):
                     image_fallback_used=image_fallback_used,
                 )
                 if success:
+                    completed = True
                     break
 
-        if retry_cnt == max_retries - 1:
+        if not completed:
             logger.error(f"API 调用失败，重试 {max_retries} 次仍然失败。")
             if last_exception is None:
                 raise Exception("未知错误")

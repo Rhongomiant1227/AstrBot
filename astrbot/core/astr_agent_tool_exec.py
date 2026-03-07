@@ -167,6 +167,41 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         return str(getattr(tool, "name", "")).strip() == "transfer_to_super_noel"
 
     @staticmethod
+    def _get_super_noel_budget_seconds(ctx, *, fallback: bool) -> float:
+        provider_settings = {}
+        try:
+            provider_settings = ctx.get_config().get("provider_settings", {})
+        except Exception:
+            provider_settings = {}
+        key = (
+            "super_noel_fallback_timeout_seconds"
+            if fallback
+            else "super_noel_timeout_seconds"
+        )
+        raw_value = provider_settings.get(key)
+        default_value = 45 if fallback else 75
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            value = default_value
+        return float(max(15, min(180, value)))
+
+    @classmethod
+    async def _run_super_noel_tool_loop(cls, ctx, *, fallback: bool, **kwargs):
+        timeout_seconds = cls._get_super_noel_budget_seconds(ctx, fallback=fallback)
+        try:
+            return await asyncio.wait_for(
+                ctx.tool_loop_agent(**kwargs),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            provider_id = str(kwargs.get("chat_provider_id") or "")
+            stage = "fallback" if fallback else "primary"
+            raise TimeoutError(
+                f"super_noel {stage} handoff timed out after {int(timeout_seconds)}s: {provider_id}"
+            ) from exc
+
+    @staticmethod
     def _extract_json_object(text: str) -> dict[str, T.Any] | None:
         if not text:
             return None
@@ -188,6 +223,15 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         return parsed if isinstance(parsed, dict) else None
 
     @staticmethod
+    def _ensure_handoff_line_terminal_punct(text: str) -> str:
+        line = str(text or "").rstrip()
+        if not line:
+            return ""
+        if line.endswith(("\u3002", "\uff01", "\uff1f", "!", "?", "\u2026", "~", "\uff5e")):
+            return line
+        return line + "\u3002"
+
+    @staticmethod
     def _normalize_handoff_line(text: str | None, fallback: str, max_len: int) -> str:
         line = str(text or "")
         for token in ("*", "`", "#"):
@@ -197,8 +241,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         if not line:
             line = fallback
         if len(line) > max_len:
-            line = line[:max_len].rstrip(" ，。！？；,.!?;:")
-        return line or fallback
+            line = line[:max_len].rstrip(" \uff0c\u3002\uff01\uff1f\uff1b,.!?;:")
+        line = line or fallback
+        return FunctionToolExecutor._ensure_handoff_line_terminal_punct(line)
 
     @staticmethod
     def _super_noel_pre_line_breaks_illusion(text: str | None) -> bool:
@@ -287,7 +332,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             "3. post_line 可以轻微嫌麻烦、带一点毒舌，但要有保护欲，不恶毒。\n"
             "4. 两句都要自然、口语、轻微傲娇，不要千篇一律。\n"
             "5. 不要 markdown，不要解释，不要旁白，不要换行，不要 JSON 之外的任何内容。\n"
-            f"6. ?????????{'?' if has_image else '?'}?\n"
+            f"6. 当前问题是否带图：{chr(26159) if has_image else chr(21542)}。\n"
             f"用户问题摘要：{preview or '???'}"
         )
 
@@ -394,6 +439,74 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         body = re.sub(r"\n{3,}", "\n\n", body)
         return body.strip()
 
+    @staticmethod
+    def _looks_like_super_noel_opening_line(text: str | None) -> bool:
+        line = str(text or "").strip(" \t\"'\uff0c\u3002\uff01\uff1f!?")
+        if not line:
+            return False
+        if len(line) > 42:
+            return False
+        opening_markers = (
+            "\u5357\u6761\u9171",
+            "\u5e9f\u67f4\u5357\u6761\u9171",
+            "\u6211\u6765",
+            "\u4ea4\u7ed9\u6211",
+            "\u6211\u5904\u7406",
+            "\u6211\u6536\u5c3e",
+            "\u6211\u66ff\u4f60",
+            "\u6211\u6765\u66ff\u4f60",
+            "\u6211\u6765\u7406\u6e05",
+            "\u6211\u6765\u505a",
+            "\u7b97\u4e86",
+            "\u5575",
+            "\u54fc",
+            "\u884c\u5427",
+            "\u5148\u6b47\u7740",
+            "\u5148\u770b\u7740",
+            "\u72af\u8ff7\u7cca",
+            "\u53c8\u5361\u58f3",
+            "\u96be\u9898\u7559\u7ed9\u6211",
+        )
+        if not any(marker in line for marker in opening_markers):
+            return False
+        content_markers = (
+            "\u547d\u9898",
+            "\u5b9a\u4e49",
+            "\u8bc1\u660e",
+            "\u7ed3\u8bba",
+            "\u53cd\u4f8b",
+            "\u56e0\u4e3a",
+            "\u6240\u4ee5",
+            "\u9996\u5148",
+            "\u5176\u6b21",
+            "\u5df2\u77e5",
+            "\u53ef\u5f97",
+            "\u6ce8\u610f",
+            "\u8bbe",
+        )
+        return not any(marker in line for marker in content_markers)
+
+    @classmethod
+    def _trim_redundant_super_noel_opening(cls, body: str | None) -> str:
+        text = cls._plainify_super_noel_completion_text(body)
+        if not text:
+            return ""
+        lines = text.split("\n")
+        trimmed: list[str] = []
+        dropped_non_empty = 0
+        trimming = True
+        for raw_line in lines:
+            line = raw_line.strip()
+            if trimming and not line:
+                continue
+            if trimming and dropped_non_empty < 2 and cls._looks_like_super_noel_opening_line(line):
+                dropped_non_empty += 1
+                continue
+            trimming = False
+            trimmed.append(raw_line)
+        cleaned = "\n".join(trimmed).strip()
+        return cleaned or text
+
     @classmethod
     async def _execute_handoff(
         cls,
@@ -455,18 +568,26 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         llm_resp = None
         handoff_exception = None
         try:
-            llm_resp = await ctx.tool_loop_agent(
-                event=event,
-                chat_provider_id=prov_id,
-                prompt=input_,
-                image_urls=image_urls,
-                system_prompt=tool.agent.instructions,
-                tools=toolset,
-                contexts=contexts,
-                max_steps=30,
-                run_hooks=tool.agent.run_hooks,
-                stream=ctx.get_config().get("provider_settings", {}).get("stream", False),
-            )
+            tool_loop_kwargs = {
+                "event": event,
+                "chat_provider_id": prov_id,
+                "prompt": input_,
+                "image_urls": image_urls,
+                "system_prompt": tool.agent.instructions,
+                "tools": toolset,
+                "contexts": contexts,
+                "max_steps": 30,
+                "run_hooks": tool.agent.run_hooks,
+                "stream": ctx.get_config().get("provider_settings", {}).get("stream", False),
+            }
+            if cls._is_super_noel_handoff(tool):
+                llm_resp = await cls._run_super_noel_tool_loop(
+                    ctx,
+                    fallback=False,
+                    **tool_loop_kwargs,
+                )
+            else:
+                llm_resp = await ctx.tool_loop_agent(**tool_loop_kwargs)
         except Exception as e:
             handoff_exception = e
 
@@ -494,7 +615,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                     )
                 if front_prov_id and front_prov_id != prov_id:
                     try:
-                        llm_resp = await ctx.tool_loop_agent(
+                        llm_resp = await cls._run_super_noel_tool_loop(
+                            ctx,
+                            fallback=True,
                             event=event,
                             chat_provider_id=front_prov_id,
                             prompt=input_,
@@ -544,9 +667,16 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         if llm_resp is None:
             raise RuntimeError("handoff returned no response")
 
+        body_text = llm_resp.completion_text
+        if cls._is_super_noel_handoff(tool):
+            plain_body_text = cls._plainify_super_noel_completion_text(body_text)
+            trimmed_body_text = cls._trim_redundant_super_noel_opening(plain_body_text)
+            if trimmed_body_text != plain_body_text:
+                logger.info("super_noel redundant opening trimmed from body")
+            body_text = trimmed_body_text
         completion_text = cls._prepend_handoff_opening(
             handoff_post_line,
-            llm_resp.completion_text,
+            body_text,
         )
         if cls._is_super_noel_handoff(tool):
             plain_completion_text = cls._plainify_super_noel_completion_text(completion_text)
