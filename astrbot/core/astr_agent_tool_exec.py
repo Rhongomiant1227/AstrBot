@@ -1,11 +1,11 @@
 import asyncio
 import inspect
 import json
+import random
+import re
 import traceback
 import typing as T
 import uuid
-from collections.abc import Sequence
-from collections.abc import Set as AbstractSet
 
 import mcp
 
@@ -28,7 +28,6 @@ from astrbot.core.astr_main_agent_resources import (
     SEND_MESSAGE_TO_USER_TOOL,
 )
 from astrbot.core.cron.events import CronMessageEvent
-from astrbot.core.message.components import Image
 from astrbot.core.message.message_event_result import (
     CommandResult,
     MessageChain,
@@ -37,86 +36,14 @@ from astrbot.core.message.message_event_result import (
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.provider.entites import ProviderRequest
 from astrbot.core.provider.register import llm_tools
-from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot.core.super_noel_session import (
+    activate_super_noel_sticky_session,
+    resolve_super_noel_binding_from_config,
+)
 from astrbot.core.utils.history_saver import persist_agent_history
-from astrbot.core.utils.image_ref_utils import is_supported_image_ref
-from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
 
 
 class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
-    @classmethod
-    def _collect_image_urls_from_args(cls, image_urls_raw: T.Any) -> list[str]:
-        if image_urls_raw is None:
-            return []
-
-        if isinstance(image_urls_raw, str):
-            return [image_urls_raw]
-
-        if isinstance(image_urls_raw, (Sequence, AbstractSet)) and not isinstance(
-            image_urls_raw, (str, bytes, bytearray)
-        ):
-            return [item for item in image_urls_raw if isinstance(item, str)]
-
-        logger.debug(
-            "Unsupported image_urls type in handoff tool args: %s",
-            type(image_urls_raw).__name__,
-        )
-        return []
-
-    @classmethod
-    async def _collect_image_urls_from_message(
-        cls, run_context: ContextWrapper[AstrAgentContext]
-    ) -> list[str]:
-        urls: list[str] = []
-        event = getattr(run_context.context, "event", None)
-        message_obj = getattr(event, "message_obj", None)
-        message = getattr(message_obj, "message", None)
-        if message:
-            for idx, component in enumerate(message):
-                if not isinstance(component, Image):
-                    continue
-                try:
-                    path = await component.convert_to_file_path()
-                    if path:
-                        urls.append(path)
-                except Exception as e:
-                    logger.error(
-                        "Failed to convert handoff image component at index %d: %s",
-                        idx,
-                        e,
-                        exc_info=True,
-                    )
-        return urls
-
-    @classmethod
-    async def _collect_handoff_image_urls(
-        cls,
-        run_context: ContextWrapper[AstrAgentContext],
-        image_urls_raw: T.Any,
-    ) -> list[str]:
-        candidates: list[str] = []
-        candidates.extend(cls._collect_image_urls_from_args(image_urls_raw))
-        candidates.extend(await cls._collect_image_urls_from_message(run_context))
-
-        normalized = normalize_and_dedupe_strings(candidates)
-        extensionless_local_roots = (get_astrbot_temp_path(),)
-        sanitized = [
-            item
-            for item in normalized
-            if is_supported_image_ref(
-                item,
-                allow_extensionless_existing_local_file=True,
-                extensionless_local_roots=extensionless_local_roots,
-            )
-        ]
-        dropped_count = len(normalized) - len(sanitized)
-        if dropped_count > 0:
-            logger.debug(
-                "Dropped %d invalid image_urls entries in handoff image inputs.",
-                dropped_count,
-            )
-        return sanitized
-
     @classmethod
     async def execute(cls, tool, run_context, **tool_args):
         """执行函数调用。
@@ -235,33 +162,247 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 toolset.add_tool(tool_name_or_obj)
         return None if toolset.empty() else toolset
 
+    @staticmethod
+    def _is_super_noel_handoff(tool: HandoffTool) -> bool:
+        return str(getattr(tool, "name", "")).strip() == "transfer_to_super_noel"
+
+    @staticmethod
+    def _extract_json_object(text: str) -> dict[str, T.Any] | None:
+        if not text:
+            return None
+        raw = str(text).strip()
+        if raw.startswith("```"):
+            parts = raw.split("\n", 1)
+            raw = parts[1] if len(parts) == 2 else raw
+            if raw.endswith("```"):
+                raw = raw.rsplit("```", 1)[0]
+            raw = raw.strip()
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            parsed = json.loads(raw[start : end + 1])
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _normalize_handoff_line(text: str | None, fallback: str, max_len: int) -> str:
+        line = str(text or "")
+        for token in ("*", "`", "#"):
+            line = line.replace(token, "")
+        line = line.replace("\r", " ").replace("\n", " ").strip(" \t\"'")
+        line = " ".join(line.split())
+        if not line:
+            line = fallback
+        if len(line) > max_len:
+            line = line[:max_len].rstrip(" ，。！？；,.!?;:")
+        return line or fallback
+
+    @staticmethod
+    def _super_noel_pre_line_breaks_illusion(text: str | None) -> bool:
+        line = str(text or "")
+        line = line.replace("\r", " ").replace("\n", " ").strip(" \t\"'")
+        line = " ".join(line.split())
+        if not line:
+            return True
+
+        forbidden_literals = (
+            "南条酱",
+            "废柴南条酱",
+            "另一个我",
+            "另一个自己",
+            "另一个南条酱",
+            "第二个我",
+            "第二人格",
+            "另一面",
+            "前台",
+            "后台",
+            "表人格",
+            "里人格",
+            "切换",
+            "换人",
+            "接手",
+            "顶号",
+            "登场",
+            "出场",
+            "上号",
+            "代打",
+            "换个状态",
+            "切个状态",
+        )
+        if any(token in line for token in forbidden_literals):
+            return True
+
+        forbidden_patterns = (
+            r"(让|叫|喊|请|找).{0,8}(她|另一个|另个|别人|谁).{0,6}(来|上|接|管|处理|收拾)",
+            r"(让|叫|喊|请|找).{0,8}(来一下|来吧|来处理|来收拾)",
+            r"(我|咱).{0,6}(去)?(叫|喊|找).{0,6}(她|另一个|别人)",
+            r"(谁|有人).{0,6}(来|接|替).{0,6}(一下|吧|我)",
+            r"(替我|帮我).{0,6}(来|接|处理|收拾)",
+        )
+        return any(re.search(pattern, line) for pattern in forbidden_patterns)
+
+    @classmethod
+    async def _generate_super_noel_bridge_lines(
+        cls,
+        ctx,
+        provider_id: str,
+        user_input: str | None,
+        has_image: bool,
+    ) -> tuple[str, str]:
+        fallback_pre_choices = [
+            "啊，突然有点困……这题先让我缓一下。",
+            "咦，脑袋忽然有点打结…等我顺一下。",
+            "唔，我这会儿有点犯迷糊…先缓一口气。",
+            "欸，眼皮突然有点沉…让我清醒一下。",
+            "嗯…这题得认真点，我先定定神。",
+        ]
+        fallback_post_choices = [
+            "哼，废柴南条酱，这题我来处理。",
+            "啧，废柴南条酱又把难题留给我了，我来收尾。",
+            "算了，废柴南条酱先歇着，这题交给我。",
+            "哼，这种题还得我补，废柴南条酱看着就好。",
+            "啧，南条酱又卡住了…行吧，我来。",
+        ]
+        fallback_pre = random.choice(fallback_pre_choices)
+        fallback_post = random.choice(fallback_post_choices)
+        if not provider_id:
+            return fallback_pre, fallback_post
+
+        preview = str(user_input or "").strip()
+        if len(preview) > 600:
+            preview = preview[:600] + "..."
+
+        prompt = (
+            "你要为同一个角色的两种状态生成两句中文过场台词，并且只能输出严格 JSON。"
+            "输出格式固定为 {\"pre_line\":\"...\",\"post_line\":\"...\"}。\n"
+            "设定：平时和用户聊天的是南条酱，更冷静、更缜密的也是南条酱。"
+            "后者会直接称呼前者为‘南条酱’或‘废柴南条酱’，不会说前台、后台、表人格、里人格。\n"
+            "要求：\n"
+            "1. pre_line 由平时聊天的南条酱说，只能表现突然犯困、发懵、脑子打结、需要缓一缓；"
+            "她本人并不知道后面会有人接手，所以绝对不能提到南条酱、另一个自己、换人、接手、让谁来、谁来处理之类的交接意识，12到22字。\n"
+            "2. post_line 由更冷静的南条酱说，像不情愿地接手，但马上开始处理，14到30字。\n"
+            "3. post_line 可以轻微嫌麻烦、带一点毒舌，但要有保护欲，不恶毒。\n"
+            "4. 两句都要自然、口语、轻微傲娇，不要千篇一律。\n"
+            "5. 不要 markdown，不要解释，不要旁白，不要换行，不要 JSON 之外的任何内容。\n"
+            f"6. ?????????{'?' if has_image else '?'}?\n"
+            f"用户问题摘要：{preview or '???'}"
+        )
+
+        try:
+            llm_generate = getattr(ctx, "llm_generate", None)
+            call_llm = getattr(ctx, "call_llm", None)
+            llm_caller = llm_generate if callable(llm_generate) else call_llm
+            if not callable(llm_caller):
+                raise AttributeError(
+                    f"{type(ctx).__name__!s} object has no attribute 'llm_generate' or 'call_llm'"
+                )
+            llm_resp = await llm_caller(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+                contexts=[],
+                system_prompt=(
+                    "你只负责生成角色切换过场台词，必须严格输出 JSON。"
+                    "pre_line 只能写突然犯困、发懵、脑子打结，绝不能暴露有人接手。"
+                    "不要调用工具，不要输出多余文字。"
+                ),
+                stream=False,
+            )
+            data = cls._extract_json_object(getattr(llm_resp, "completion_text", "")) or {}
+            raw_pre = data.get("pre_line")
+            raw_post = data.get("post_line")
+            normalized_pre = cls._normalize_handoff_line(raw_pre, fallback_pre, 28)
+            if cls._super_noel_pre_line_breaks_illusion(normalized_pre):
+                logger.info(
+                    "super_noel bridge pre_line rejected for illusion break: raw_pre=%s normalized_pre=%s",
+                    raw_pre,
+                    normalized_pre,
+                )
+                pre_line = fallback_pre
+            else:
+                pre_line = normalized_pre
+            post_line = cls._normalize_handoff_line(raw_post, fallback_post, 36)
+            if not raw_pre or not raw_post:
+                logger.info(
+                    "super_noel bridge fallback used: has_pre=%s has_post=%s pre=%s post=%s",
+                    bool(raw_pre),
+                    bool(raw_post),
+                    pre_line,
+                    post_line,
+                )
+            else:
+                logger.info(
+                    "super_noel bridge generated: pre=%s post=%s",
+                    pre_line,
+                    post_line,
+                )
+            return pre_line, post_line
+        except Exception as e:
+            logger.info(
+                "Failed to generate super_noel bridge lines, using fallback: %s",
+                e,
+                exc_info=True,
+            )
+            return fallback_pre, fallback_post
+
+    @staticmethod
+    def _summarize_handoff_error(err: T.Any) -> str:
+        text = str(err or "").replace("\r", " ").replace("\n", " ").strip()
+        match = re.search(r"\b(429|500|502|503|504)\b", text)
+        if match:
+            return f"上游 {match.group(1)}"
+        if text:
+            return text[:120]
+        return "上游临时抽风"
+
+    @classmethod
+    async def _send_handoff_notice(cls, event, text: str | None) -> None:
+        notice = cls._normalize_handoff_line(text, "", 48)
+        if not notice:
+            return
+        try:
+            await event.send(MessageChain().message(notice))
+        except Exception as e:
+            logger.debug("Failed to send handoff notice: %s", e, exc_info=True)
+
+    @classmethod
+    def _prepend_handoff_opening(cls, opening: str | None, body: str | None) -> str:
+        opening_text = cls._normalize_handoff_line(opening, "", 48)
+        body_text = str(body or "").lstrip()
+        if not opening_text:
+            return body_text
+        if not body_text:
+            return opening_text
+        return opening_text + "\n" + body_text
+
+    @staticmethod
+    def _plainify_super_noel_completion_text(text: str | None) -> str:
+        body = str(text or "")
+        if not body:
+            return ""
+        body = body.replace("\r\n", "\n").replace("\r", "\n")
+        body = body.replace("```", "").replace("`", "")
+        body = body.replace("**", "").replace("__", "")
+        body = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", body)
+        body = re.sub(r"(?m)^\s*>\s?", "", body)
+        body = re.sub(r"(?m)^\s*---+\s*$", "", body)
+        body = re.sub(r"(?m)^\s*[-*]\s+", "- ", body)
+        body = re.sub(r"[ \t]+\n", "\n", body)
+        body = "\n".join(part.rstrip() for part in body.split("\n"))
+        body = re.sub(r"\n{3,}", "\n\n", body)
+        return body.strip()
+
     @classmethod
     async def _execute_handoff(
         cls,
         tool: HandoffTool,
         run_context: ContextWrapper[AstrAgentContext],
-        *,
-        image_urls_prepared: bool = False,
-        **tool_args: T.Any,
+        **tool_args,
     ):
-        tool_args = dict(tool_args)
         input_ = tool_args.get("input")
-        if image_urls_prepared:
-            prepared_image_urls = tool_args.get("image_urls")
-            if isinstance(prepared_image_urls, list):
-                image_urls = prepared_image_urls
-            else:
-                logger.debug(
-                    "Expected prepared handoff image_urls as list[str], got %s.",
-                    type(prepared_image_urls).__name__,
-                )
-                image_urls = []
-        else:
-            image_urls = await cls._collect_handoff_image_urls(
-                run_context,
-                tool_args.get("image_urls"),
-            )
-        tool_args["image_urls"] = image_urls
+        image_urls = tool_args.get("image_urls")
 
         # Build handoff toolset from registered tools plus runtime computer tools.
         toolset = cls._build_handoff_toolset(run_context, tool.agent.tools)
@@ -269,12 +410,32 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         ctx = run_context.context.context
         event = run_context.context.event
         umo = event.unified_msg_origin
+        front_prov_id = await ctx.get_current_chat_provider_id(umo)
 
         # Use per-subagent provider override if configured; otherwise fall back
         # to the current/default provider resolution.
-        prov_id = getattr(
-            tool, "provider_id", None
-        ) or await ctx.get_current_chat_provider_id(umo)
+        prov_id = getattr(tool, "provider_id", None) or front_prov_id
+        effective_prov_id = prov_id
+
+        handoff_pre_line = ""
+        handoff_post_line = ""
+        suppress_super_noel_bridge = False
+        if cls._is_super_noel_handoff(tool):
+            suppress_super_noel_bridge = bool(event.get_extra("super_noel_sticky_active"))
+            if suppress_super_noel_bridge:
+                logger.info(
+                    "super_noel handoff bridge suppressed for active sticky session"
+                )
+            else:
+                handoff_pre_line, handoff_post_line = (
+                    await cls._generate_super_noel_bridge_lines(
+                        ctx,
+                        front_prov_id or prov_id,
+                        input_,
+                        bool(image_urls),
+                    )
+                )
+                await cls._send_handoff_notice(event, handoff_pre_line)
 
         # prepare begin dialogs
         contexts = None
@@ -291,22 +452,141 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 except Exception:
                     continue
 
-        prov_settings: dict = ctx.get_config(umo=umo).get("provider_settings", {})
-        agent_max_step = int(prov_settings.get("max_agent_step", 30))
-        stream = prov_settings.get("streaming_response", False)
-        llm_resp = await ctx.tool_loop_agent(
-            event=event,
-            chat_provider_id=prov_id,
-            prompt=input_,
-            image_urls=image_urls,
-            system_prompt=tool.agent.instructions,
-            tools=toolset,
-            contexts=contexts,
-            max_steps=agent_max_step,
-            stream=stream,
+        llm_resp = None
+        handoff_exception = None
+        try:
+            llm_resp = await ctx.tool_loop_agent(
+                event=event,
+                chat_provider_id=prov_id,
+                prompt=input_,
+                image_urls=image_urls,
+                system_prompt=tool.agent.instructions,
+                tools=toolset,
+                contexts=contexts,
+                max_steps=30,
+                run_hooks=tool.agent.run_hooks,
+                stream=ctx.get_config().get("provider_settings", {}).get("stream", False),
+            )
+        except Exception as e:
+            handoff_exception = e
+
+        if cls._is_super_noel_handoff(tool):
+            primary_failed = (
+                handoff_exception is not None
+                or llm_resp is None
+                or getattr(llm_resp, "role", "") == "err"
+            )
+            if primary_failed:
+                fail_detail = cls._summarize_handoff_error(
+                    handoff_exception or getattr(llm_resp, "completion_text", "")
+                )
+                logger.warning(
+                    "super_noel primary provider failed, trying downgrade provider: %s",
+                    fail_detail,
+                    exc_info=handoff_exception is not None,
+                )
+                downgrade_post = ""
+                if not suppress_super_noel_bridge:
+                    downgrade_post = cls._normalize_handoff_line(
+                        handoff_post_line,
+                        "哼，废柴南条酱，外面那个接口掉链子了，我直接来。",
+                        36,
+                    )
+                if front_prov_id and front_prov_id != prov_id:
+                    try:
+                        llm_resp = await ctx.tool_loop_agent(
+                            event=event,
+                            chat_provider_id=front_prov_id,
+                            prompt=input_,
+                            image_urls=image_urls,
+                            system_prompt=tool.agent.instructions,
+                            tools=toolset,
+                            contexts=contexts,
+                            max_steps=24,
+                            run_hooks=tool.agent.run_hooks,
+                            stream=ctx.get_config().get("provider_settings", {}).get("stream", False),
+                        )
+                        effective_prov_id = front_prov_id
+                        handoff_post_line = downgrade_post
+                    except Exception as downgrade_error:
+                        fail_detail = cls._summarize_handoff_error(downgrade_error)
+                        fail_text = (
+                            "唭，这次接管时上游接口又抽风了，"
+                            f"{fail_detail}。"
+                            "你要我立刻重试，还是先用普通模式给你答？"
+                        )
+                        await event.send(MessageChain().message(fail_text))
+                        yield None
+                        return
+                else:
+                    fail_text = (
+                        "唭，这次接管时上游接口抽风了，"
+                        f"{fail_detail}。"
+                        "你要我立刻重试吗？"
+                    )
+                    await event.send(MessageChain().message(fail_text))
+                    yield None
+                    return
+
+            if llm_resp is None or getattr(llm_resp, "role", "") == "err":
+                fail_detail = cls._summarize_handoff_error(
+                    handoff_exception or getattr(llm_resp, "completion_text", "")
+                )
+                fail_text = (
+                    "唭，这次接管结果没能顺利落地，"
+                    f"{fail_detail}。"
+                    "你要我重跑一遍吗？"
+                )
+                await event.send(MessageChain().message(fail_text))
+                yield None
+                return
+
+        if llm_resp is None:
+            raise RuntimeError("handoff returned no response")
+
+        completion_text = cls._prepend_handoff_opening(
+            handoff_post_line,
+            llm_resp.completion_text,
         )
+        if cls._is_super_noel_handoff(tool):
+            plain_completion_text = cls._plainify_super_noel_completion_text(completion_text)
+            if plain_completion_text != completion_text:
+                logger.info(
+                    "super_noel completion plainified after handoff"
+                )
+            completion_text = plain_completion_text
+        if cls._is_super_noel_handoff(tool):
+            try:
+                cfg = ctx.get_config(umo=umo)
+                sticky_persona_id, sticky_provider_id = resolve_super_noel_binding_from_config(
+                    cfg,
+                    agent_name=getattr(tool.agent, "name", ""),
+                )
+                await activate_super_noel_sticky_session(
+                    umo=umo,
+                    persona_id=sticky_persona_id,
+                    provider_id=(effective_prov_id or sticky_provider_id or front_prov_id),
+                    settings_source=cfg,
+                )
+            except Exception as sticky_exc:
+                logger.warning(
+                    "Failed to activate super_noel sticky session: %s",
+                    sticky_exc,
+                    exc_info=True,
+                )
+        if cls._is_super_noel_handoff(tool):
+            try:
+                await event.send(MessageChain().message(completion_text))
+                yield None
+                return
+            except Exception as e:
+                logger.error(
+                    "Failed to send super_noel direct reply, falling back to tool result: %s",
+                    e,
+                    exc_info=True,
+                )
         yield mcp.types.CallToolResult(
-            content=[mcp.types.TextContent(type="text", text=llm_resp.completion_text)]
+            content=[mcp.types.TextContent(type="text", text=completion_text)]
         )
 
     @classmethod
@@ -362,18 +642,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
     ) -> None:
         """Run the subagent handoff and, on completion, wake the main agent."""
         result_text = ""
-        tool_args = dict(tool_args)
-        tool_args["image_urls"] = await cls._collect_handoff_image_urls(
-            run_context,
-            tool_args.get("image_urls"),
-        )
         try:
-            async for r in cls._execute_handoff(
-                tool,
-                run_context,
-                image_urls_prepared=True,
-                **tool_args,
-            ):
+            async for r in cls._execute_handoff(tool, run_context, **tool_args):
                 if isinstance(r, mcp.types.CallToolResult):
                     for content in r.content:
                         if isinstance(content, mcp.types.TextContent):
