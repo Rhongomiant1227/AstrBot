@@ -661,6 +661,16 @@ class ProviderOpenAIOfficial(Provider):
         return "", []
 
     @staticmethod
+    def _looks_like_command_style_input(user_text: str | None) -> bool:
+        text = str(user_text or "").strip()
+        if not text:
+            return False
+        first_line = text.splitlines()[0].strip()
+        return bool(
+            re.match(r"^(?:/|\uFF0F)[A-Za-z0-9][A-Za-z0-9_.:-]*(?:\s|$)", first_line)
+        )
+
+    @staticmethod
     def _looks_like_complex_reasoning_handoff_query(
         user_text: str,
         image_urls: list[str] | None = None,
@@ -670,6 +680,8 @@ class ProviderOpenAIOfficial(Provider):
         compact = re.sub(r"\s+", "", lowered)
         has_image = bool(image_urls)
         if not text.strip() and not has_image:
+            return False
+        if ProviderOpenAIOfficial._looks_like_command_style_input(text):
             return False
 
         signal_score = 0

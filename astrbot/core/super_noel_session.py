@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -189,6 +190,14 @@ def _should_release_by_text(text: str, return_keywords: list[str]) -> bool:
     return any(keyword in normalized for keyword in return_keywords)
 
 
+def _looks_like_command_style_input(text: str | None) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    first_line = normalized.splitlines()[0].strip()
+    return bool(re.match(r"^(?:/|\uFF0F)[A-Za-z0-9][A-Za-z0-9_.:-]*(?:\s|$)", first_line))
+
+
 async def clear_super_noel_sticky_session(
     umo: str,
     *,
@@ -307,6 +316,9 @@ async def prepare_super_noel_sticky_session(
         return False
 
     text = str(user_text or "")
+    if _looks_like_command_style_input(text):
+        await clear_super_noel_sticky_session(umo, reason="command_input")
+        return False
     if _should_release_by_text(text, settings["return_keywords"]):
         await clear_super_noel_sticky_session(umo, reason="user_requested_return")
         return False
