@@ -5,6 +5,7 @@ from astrbot.core.message.components import At, AtAll, Reply
 from astrbot.core.message.message_event_result import MessageChain, MessageEventResult
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.message_type import MessageType
+from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
 from astrbot.core.star.filter.permission import PermissionTypeFilter
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
@@ -146,6 +147,7 @@ class WakingCheckStage(Stage):
         # 检查插件的 handler filter
         activated_handlers = []
         handlers_parsed_params = {}  # 注册了指令的 handler
+        matched_command_handler = False
 
         # 将 plugins_name 设置到 event 中
         enabled_plugins_name = self.ctx.astrbot_config.get("plugin_set", ["*"])
@@ -212,6 +214,10 @@ class WakingCheckStage(Stage):
                 is_wake = True
                 event.is_wake = True
 
+                matched_command_handler = matched_command_handler or any(
+                    isinstance(f, (CommandFilter, CommandGroupFilter))
+                    for f in handler.event_filters
+                )
                 is_group_cmd_handler = any(
                     isinstance(f, CommandGroupFilter) for f in handler.event_filters
                 )
@@ -232,6 +238,7 @@ class WakingCheckStage(Stage):
 
         event.set_extra("activated_handlers", activated_handlers)
         event.set_extra("handlers_parsed_params", handlers_parsed_params)
+        event.set_extra("matched_command_handler", matched_command_handler)
 
         if not is_wake:
             event.stop_event()

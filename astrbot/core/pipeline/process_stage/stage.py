@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.super_noel_session import clear_super_noel_sticky_session
 from astrbot.core.star.star_handler import StarHandlerMetadata
 
 from ..context import PipelineContext
@@ -12,6 +13,12 @@ from .method.star_request import StarRequestSubStage
 
 @register_stage
 class ProcessStage(Stage):
+    @staticmethod
+    def _should_skip_default_llm_for_command(event: AstrMessageEvent) -> bool:
+        if not bool(event.get_extra("matched_command_handler", False)):
+            return False
+        return not bool(event.get_extra("command_allow_default_llm", False))
+
     async def initialize(self, ctx: PipelineContext) -> None:
         self.ctx = ctx
         self.config = ctx.astrbot_config
@@ -52,6 +59,16 @@ class ProcessStage(Stage):
         # 调用 LLM 相关请求
         if not self.ctx.astrbot_config["provider_settings"].get("enable", True):
             return
+        if self._should_skip_default_llm_for_command(event):
+            try:
+                await clear_super_noel_sticky_session(
+                    event.unified_msg_origin,
+                    reason="command_handler_matched",
+                )
+            except Exception:
+                pass
+            return
+
 
         if (
             not event._has_send_oper
