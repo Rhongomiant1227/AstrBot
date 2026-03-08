@@ -1,5 +1,5 @@
-import asyncio
 import ast
+import asyncio
 import base64
 import inspect
 import json
@@ -224,18 +224,14 @@ class ProviderOpenAIOfficial(Provider):
         self.sub2api_tool_adapter_enabled = self.sub2api_mode and bool(
             provider_config.get("sub2api_tool_adapter", True),
         )
-        self.sub2api_force_python_for_deterministic = (
-            self.sub2api_mode
-            and bool(
-                provider_config.get(
-                    "sub2api_force_python_for_deterministic",
-                    False,
-                ),
-            )
+        self.sub2api_force_python_for_deterministic = self.sub2api_mode and bool(
+            provider_config.get(
+                "sub2api_force_python_for_deterministic",
+                False,
+            ),
         )
-        self.sub2api_force_python_retry_once = (
-            self.sub2api_mode
-            and bool(provider_config.get("sub2api_force_python_retry_once", False))
+        self.sub2api_force_python_retry_once = self.sub2api_mode and bool(
+            provider_config.get("sub2api_force_python_retry_once", False)
         )
 
         self.chat_default_params = set(
@@ -244,7 +240,9 @@ class ProviderOpenAIOfficial(Provider):
             ).parameters.keys()
         )
         self.responses_default_params: set[str] = set()
-        if hasattr(self.client, "responses") and hasattr(self.client.responses, "create"):
+        if hasattr(self.client, "responses") and hasattr(
+            self.client.responses, "create"
+        ):
             self.responses_default_params = set(
                 inspect.signature(
                     self.client.responses.create,
@@ -352,7 +350,9 @@ class ProviderOpenAIOfficial(Provider):
         for tool in tool_list:
             if not isinstance(tool, dict):
                 continue
-            if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+            if tool.get("type") == "function" and isinstance(
+                tool.get("function"), dict
+            ):
                 function_payload = tool["function"]
                 converted_tool = {
                     "type": "function",
@@ -367,7 +367,6 @@ class ProviderOpenAIOfficial(Provider):
                 continue
             converted.append(tool)
         return converted
-
 
     def _build_sub2api_tool_adapter_prompt(
         self,
@@ -461,7 +460,7 @@ class ProviderOpenAIOfficial(Provider):
             "<sub2api_tool_adapter>\n"
             "You are running through a tool compatibility adapter for sub2api.\n"
             f"Current adapter stage: {phase_name}.\n"
-            "Tool tag format: <astrbot_tool_call>{\"name\":\"tool_name\",\"arguments\":{...}}</astrbot_tool_call>\n"
+            'Tool tag format: <astrbot_tool_call>{"name":"tool_name","arguments":{...}}</astrbot_tool_call>\n'
             "For multiple tools, output multiple <astrbot_tool_call>...</astrbot_tool_call> blocks.\n"
             f"{phase_rules}"
             f"{forced_rules}"
@@ -476,7 +475,9 @@ class ProviderOpenAIOfficial(Provider):
     @staticmethod
     def _pick_sub2api_python_tool_name_from_names(tool_names: list[str]) -> str | None:
         preferred_names = ["run_python", "astrbot_execute_python"]
-        normalized_names = [name for name in tool_names if isinstance(name, str) and name]
+        normalized_names = [
+            name for name in tool_names if isinstance(name, str) and name
+        ]
         for preferred in preferred_names:
             if preferred in normalized_names:
                 return preferred
@@ -644,16 +645,20 @@ class ProviderOpenAIOfficial(Provider):
                         if part_type == "image_url":
                             image_payload = item.get("image_url")
                             if isinstance(image_payload, dict):
-                                image_url = image_payload.get("url") or image_payload.get(
-                                    "image_url"
-                                )
+                                image_url = image_payload.get(
+                                    "url"
+                                ) or image_payload.get("image_url")
                             elif isinstance(image_payload, str):
                                 image_url = image_payload
                         if image_url is None:
                             image_url = item.get("image_url") or item.get("url")
                         if image_url:
                             image_urls.append(str(image_url))
-                text = "".join(text_parts) if text_parts else self._normalize_content(content, strip=False)
+                text = (
+                    "".join(text_parts)
+                    if text_parts
+                    else self._normalize_content(content, strip=False)
+                )
             else:
                 text = self._normalize_content(content, strip=False)
             if text or image_urls:
@@ -753,7 +758,10 @@ class ProviderOpenAIOfficial(Provider):
             "concurrency",
             "debug",
         )
-        if any(keyword and (keyword in text or keyword in lowered) for keyword in complexity_keywords):
+        if any(
+            keyword and (keyword in text or keyword in lowered)
+            for keyword in complexity_keywords
+        ):
             signal_score += 2
 
         math_notation_patterns = (
@@ -765,7 +773,10 @@ class ProviderOpenAIOfficial(Provider):
             r"\bdy/dx\b|\bd/dx\b|y''|y'",
             r"\b[0-9]{3,}[mpsz]\b",
         )
-        notation_hits = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in math_notation_patterns)
+        notation_hits = sum(
+            bool(re.search(pattern, text, re.IGNORECASE))
+            for pattern in math_notation_patterns
+        )
         if notation_hits >= 2:
             signal_score += 2
         elif notation_hits == 1:
@@ -829,9 +840,17 @@ class ProviderOpenAIOfficial(Provider):
             "这个图怎么样",
         )
         if has_image:
-            has_strong_image_reasoning = any(marker in text for marker in image_reasoning_markers)
-            has_casual_image_chat = any(marker in text for marker in casual_image_chat_markers)
-            if has_casual_image_chat and not has_strong_image_reasoning and notation_hits == 0:
+            has_strong_image_reasoning = any(
+                marker in text for marker in image_reasoning_markers
+            )
+            has_casual_image_chat = any(
+                marker in text for marker in casual_image_chat_markers
+            )
+            if (
+                has_casual_image_chat
+                and not has_strong_image_reasoning
+                and notation_hits == 0
+            ):
                 return False
             if has_strong_image_reasoning:
                 signal_score += 2
@@ -847,7 +866,9 @@ class ProviderOpenAIOfficial(Provider):
             "牌理",
             "三麻",
         )
-        if re.search(r"\b[0-9]{3,}[mpsz]\b", lowered) and any(marker in text for marker in riichi_markers):
+        if re.search(r"\b[0-9]{3,}[mpsz]\b", lowered) and any(
+            marker in text for marker in riichi_markers
+        ):
             signal_score += 2
 
         if any(marker in text for marker in ("死锁", "并发", "线程")):
@@ -856,8 +877,34 @@ class ProviderOpenAIOfficial(Provider):
         return signal_score >= 2
 
     @staticmethod
-    def _pick_sub2api_super_handoff_tool_name_from_names(tool_names: list[str]) -> str | None:
-        normalized_names = [name for name in tool_names if isinstance(name, str) and name]
+    def _looks_like_manual_super_noel_request(text: str | None) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        markers = (
+            "另一个你",
+            "另一个南条酱",
+            "另外的那个南条酱",
+            "里南条酱",
+            "超级南条酱",
+            "更冷静一点的南条酱",
+            "更严谨一点的南条酱",
+            "叫另一个你",
+            "叫另一个南条酱",
+            "叫里南条酱",
+            "让另一个你来",
+            "让另一个南条酱来",
+            "让里南条酱来",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _pick_sub2api_super_handoff_tool_name_from_names(
+        tool_names: list[str],
+    ) -> str | None:
+        normalized_names = [
+            name for name in tool_names if isinstance(name, str) and name
+        ]
         if "transfer_to_super_noel" in normalized_names:
             return "transfer_to_super_noel"
         return None
@@ -880,11 +927,17 @@ class ProviderOpenAIOfficial(Provider):
             if isinstance(name, str) and name:
                 tool_names.append(name)
 
-        handoff_tool_name = self._pick_sub2api_super_handoff_tool_name_from_names(tool_names)
+        handoff_tool_name = self._pick_sub2api_super_handoff_tool_name_from_names(
+            tool_names
+        )
         if not handoff_tool_name:
             return None, ""
 
-        latest_user_text, image_urls = self._extract_latest_user_request_for_sub2api(messages)
+        latest_user_text, image_urls = self._extract_latest_user_request_for_sub2api(
+            messages
+        )
+        if self._looks_like_manual_super_noel_request(latest_user_text):
+            return handoff_tool_name, "manual_super_noel_request"
         if not self._looks_like_complex_reasoning_handoff_query(
             latest_user_text,
             image_urls,
@@ -935,7 +988,9 @@ class ProviderOpenAIOfficial(Provider):
         )
         if not handoff_tool_name:
             return None
-        user_text, image_urls = self._extract_latest_user_request_for_sub2api(request_messages)
+        user_text, image_urls = self._extract_latest_user_request_for_sub2api(
+            request_messages
+        )
         if not self._looks_like_complex_reasoning_handoff_query(user_text, image_urls):
             return None
 
@@ -982,11 +1037,16 @@ class ProviderOpenAIOfficial(Provider):
 
         if self._is_sub2api_post_tool_phase(request_messages):
             retry_reason = self._get_sub2api_python_failure_reason(request_messages)
-            if retry_reason not in {"python_resource_memory", "python_resource_timeout"}:
+            if retry_reason not in {
+                "python_resource_memory",
+                "python_resource_timeout",
+            }:
                 return False, "", ""
 
             completion_text = str(getattr(llm_response, "completion_text", "") or "")
-            if completion_text and not self._looks_like_sub2api_retry_chatter(completion_text):
+            if completion_text and not self._looks_like_sub2api_retry_chatter(
+                completion_text
+            ):
                 return False, "", ""
             return True, python_tool_name, retry_reason
 
@@ -1102,7 +1162,6 @@ class ProviderOpenAIOfficial(Provider):
         )
         return any(marker in lowered or marker in text for marker in markers)
 
-
     def _is_sub2api_post_tool_phase(self, messages: list[Any]) -> bool:
         marker = "[tool_output call_id="
         latest_user_index = -1
@@ -1133,7 +1192,6 @@ class ProviderOpenAIOfficial(Provider):
             if marker in content_text:
                 return True
         return False
-
 
     def _inject_sub2api_tool_adapter_prompt(
         self,
@@ -1291,7 +1349,6 @@ class ProviderOpenAIOfficial(Provider):
             stripped = re.sub(r"\s*```\s*$", "", stripped)
         return stripped.strip()
 
-
     def _try_parse_adjacent_json_values(self, raw_payload: str) -> list[Any] | None:
         if not isinstance(raw_payload, str):
             return None
@@ -1322,7 +1379,6 @@ class ProviderOpenAIOfficial(Provider):
         if len(values) > 1:
             return values
         return None
-
 
     def _try_parse_json_like_payload(self, raw_payload: str) -> Any:
         if not isinstance(raw_payload, str):
@@ -1418,7 +1474,9 @@ class ProviderOpenAIOfficial(Provider):
         )
         for match in dangling_open_tag_pattern.finditer(text):
             tag_name = match.group("tag")
-            if re.search(rf"</{re.escape(tag_name)}>", text[match.end() :], re.IGNORECASE):
+            if re.search(
+                rf"</{re.escape(tag_name)}>", text[match.end() :], re.IGNORECASE
+            ):
                 continue
 
             span = (match.start(), len(text))
@@ -1451,15 +1509,12 @@ class ProviderOpenAIOfficial(Provider):
             payload = match.group(1).strip()
             if not payload:
                 continue
-            if (
-                ("\"name\"" in payload or "'name'" in payload)
-                and (
-                    "\"arguments\"" in payload
-                    or "'arguments'" in payload
-                    or "\"args\"" in payload
-                    or "'args'" in payload
-                    or "\"tool_calls\"" in payload
-                )
+            if ('"name"' in payload or "'name'" in payload) and (
+                '"arguments"' in payload
+                or "'arguments'" in payload
+                or '"args"' in payload
+                or "'args'" in payload
+                or '"tool_calls"' in payload
             ):
                 segments.append((match.start(), match.end(), payload))
 
@@ -1469,21 +1524,16 @@ class ProviderOpenAIOfficial(Provider):
 
         stripped = text.strip()
         if (
-            (
-                (stripped.startswith("{") and stripped.endswith("}"))
-                or (stripped.startswith("[") and stripped.endswith("]"))
-            )
-            and (
-                "\"name\"" in stripped
-                or "'name'" in stripped
-                or "\"tool_calls\"" in stripped
-                or "'tool_calls'" in stripped
-            )
+            (stripped.startswith("{") and stripped.endswith("}"))
+            or (stripped.startswith("[") and stripped.endswith("]"))
+        ) and (
+            '"name"' in stripped
+            or "'name'" in stripped
+            or '"tool_calls"' in stripped
+            or "'tool_calls'" in stripped
         ):
             segments.append((0, len(text), stripped))
         return segments
-
-
 
     def _strip_sub2api_tool_tag_blocks(self, text: str) -> str:
         if not text:
@@ -1575,7 +1625,9 @@ class ProviderOpenAIOfficial(Provider):
                     continue
 
                 nested_function = self._to_plain_dict(call.get("function"))
-                function_name = call.get("name") or call.get("tool") or call.get("function")
+                function_name = (
+                    call.get("name") or call.get("tool") or call.get("function")
+                )
                 if isinstance(function_name, dict):
                     function_name = function_name.get("name")
                 if not function_name and nested_function:
@@ -1689,7 +1741,9 @@ class ProviderOpenAIOfficial(Provider):
                     if self.sub2api_mode:
                         text_fragments.append(text)
                     else:
-                        converted_parts.append({"type": "input_text", "text": text or " "})
+                        converted_parts.append(
+                            {"type": "input_text", "text": text or " "}
+                        )
                     continue
                 if part_type == "think":
                     think_text = part.get("think")
@@ -1841,7 +1895,8 @@ class ProviderOpenAIOfficial(Provider):
                         {
                             "type": "function_call",
                             "call_id": str(
-                                tool_call.get("id") or f"call_{len(response_input)+1}",
+                                tool_call.get("id")
+                                or f"call_{len(response_input) + 1}",
                             ),
                             "name": str(function_name),
                             "arguments": arguments,
@@ -1939,9 +1994,11 @@ class ProviderOpenAIOfficial(Provider):
                 retry_responses_payload = self._convert_chat_payload_to_responses(
                     retry_payloads,
                 )
-                retry_request_payload, retry_extra_body = self._split_payload_and_extra_body(
-                    retry_responses_payload,
-                    self.responses_default_params,
+                retry_request_payload, retry_extra_body = (
+                    self._split_payload_and_extra_body(
+                        retry_responses_payload,
+                        self.responses_default_params,
+                    )
                 )
                 retry_completion = await self.client.responses.create(
                     **retry_request_payload,
@@ -1954,7 +2011,9 @@ class ProviderOpenAIOfficial(Provider):
                     tools,
                     request_messages=retry_payloads.get("messages"),
                 )
-                retry_called_tools = getattr(retry_llm_response, "tools_call_name", None)
+                retry_called_tools = getattr(
+                    retry_llm_response, "tools_call_name", None
+                )
                 if isinstance(retry_called_tools, list) and retry_called_tools:
                     logger.info(
                         "sub2api compute retry succeeded with tool call: tool=%s reason=%s",
@@ -2310,7 +2369,6 @@ class ProviderOpenAIOfficial(Provider):
 
         return None, latest_error
 
-
     async def _parse_openai_response_completion(
         self,
         completion: Any,
@@ -2320,8 +2378,10 @@ class ProviderOpenAIOfficial(Provider):
         llm_response = LLMResponse("assistant")
         completion_dict = self._to_plain_dict(completion)
         if not completion_dict:
-            transcript_completion, transcript_error = self._try_parse_responses_sse_transcript(
-                completion,
+            transcript_completion, transcript_error = (
+                self._try_parse_responses_sse_transcript(
+                    completion,
+                )
             )
             if transcript_completion:
                 completion_dict = transcript_completion
@@ -2680,9 +2740,15 @@ class ProviderOpenAIOfficial(Provider):
         )
         if any(stripped.startswith(prefix) for prefix in starters):
             return True
-        if stripped.startswith("\u6211\u53ef\u4ee5") and any(token in stripped for token in ("\u7ee7\u7eed", "\u518d", "\u5e2e\u4f60", "\u7ed9\u4f60")):
+        if stripped.startswith("\u6211\u53ef\u4ee5") and any(
+            token in stripped
+            for token in ("\u7ee7\u7eed", "\u518d", "\u5e2e\u4f60", "\u7ed9\u4f60")
+        ):
             return True
-        if stripped.startswith("\u6211\u8fd8\u80fd") and any(token in stripped for token in ("\u7ee7\u7eed", "\u5e2e\u4f60", "\u7ed9\u4f60")):
+        if stripped.startswith("\u6211\u8fd8\u80fd") and any(
+            token in stripped
+            for token in ("\u7ee7\u7eed", "\u5e2e\u4f60", "\u7ed9\u4f60")
+        ):
             return True
         return False
 
@@ -2730,6 +2796,7 @@ class ProviderOpenAIOfficial(Provider):
                 continue
             return head
         return body
+
     async def _parse_openai_completion(
         self, completion: ChatCompletion, tools: ToolSet | None
     ) -> LLMResponse:
@@ -2784,7 +2851,9 @@ class ProviderOpenAIOfficial(Provider):
             args_ls = list(llm_response.tools_call_args or [])
             func_name_ls = list(llm_response.tools_call_name or [])
             tool_call_ids = list(llm_response.tools_call_ids or [])
-            tool_call_extra_content_dict = dict(llm_response.tools_call_extra_content or {})
+            tool_call_extra_content_dict = dict(
+                llm_response.tools_call_extra_content or {}
+            )
             for tool_call in choice.message.tool_calls:
                 if isinstance(tool_call, str):
                     # workaround for #1359
@@ -3023,8 +3092,7 @@ class ProviderOpenAIOfficial(Provider):
             tool_like_count = sum(
                 1
                 for msg in context_query
-                if isinstance(msg, dict)
-                and msg.get("role") in {"tool", "function"}
+                if isinstance(msg, dict) and msg.get("role") in {"tool", "function"}
             )
             if tool_like_count > 0:
                 sanitized_context = [

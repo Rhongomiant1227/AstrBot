@@ -294,3 +294,11 @@ async def test_collect_handoff_image_urls_filters_extensionless_file_outside_tem
     )
 
     assert image_urls == []
+
+
+def test_manual_super_noel_request_markers_match_explicit_switch_phrases():
+    assert FunctionToolExecutor._looks_like_manual_super_noel_request(
+        "能不能叫另一个你回来？"
+    )
+    assert FunctionToolExecutor._looks_like_manual_super_noel_request("让里南条酱来")
+    assert not FunctionToolExecutor._looks_like_manual_super_noel_request("南条酱！")

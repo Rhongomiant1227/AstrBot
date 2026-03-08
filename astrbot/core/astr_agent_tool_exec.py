@@ -167,6 +167,28 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         return str(getattr(tool, "name", "")).strip() == "transfer_to_super_noel"
 
     @staticmethod
+    def _looks_like_manual_super_noel_request(text: str | None) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        markers = (
+            "另一个你",
+            "另一个南条酱",
+            "另外的那个南条酱",
+            "里南条酱",
+            "超级南条酱",
+            "更冷静一点的南条酱",
+            "更严谨一点的南条酱",
+            "叫另一个你",
+            "叫另一个南条酱",
+            "叫里南条酱",
+            "让另一个你来",
+            "让另一个南条酱来",
+            "让里南条酱来",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
     def _get_super_noel_budget_seconds(ctx, *, fallback: bool) -> float:
         provider_settings = {}
         try:
@@ -227,7 +249,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         line = str(text or "").rstrip()
         if not line:
             return ""
-        if line.endswith(("\u3002", "\uff01", "\uff1f", "!", "?", "\u2026", "~", "\uff5e")):
+        if line.endswith(
+            ("\u3002", "\uff01", "\uff1f", "!", "?", "\u2026", "~", "\uff5e")
+        ):
             return line
         return line + "\u3002"
 
@@ -306,10 +330,10 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         ]
         fallback_post_choices = [
             "哼，废柴南条酱，这题我来处理。",
-            "啧，废柴南条酱又把难题留给我了，我来收尾。",
-            "算了，废柴南条酱先歇着，这题交给我。",
+            "啧，她又把难题留给我了，我来收尾。",
+            "算了，她先歇着，这题交给我。",
             "哼，这种题还得我补，废柴南条酱看着就好。",
-            "啧，南条酱又卡住了…行吧，我来。",
+            "啧，她又卡住了…行吧，我来。",
         ]
         fallback_pre = random.choice(fallback_pre_choices)
         fallback_post = random.choice(fallback_post_choices)
@@ -322,9 +346,10 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
 
         prompt = (
             "你要为同一个角色的两种状态生成两句中文过场台词，并且只能输出严格 JSON。"
-            "输出格式固定为 {\"pre_line\":\"...\",\"post_line\":\"...\"}。\n"
+            '输出格式固定为 {"pre_line":"...","post_line":"..."}。\n'
             "设定：平时和用户聊天的是南条酱，更冷静、更缜密的也是南条酱。"
-            "后者会直接称呼前者为‘南条酱’或‘废柴南条酱’，不会说前台、后台、表人格、里人格。\n"
+            "后者提到前者时，平时优先说‘她’，偶尔带一点溺爱式不耐烦时才会说‘废柴南条酱’，"
+            "不要总把她叫‘南条酱’，也不会说前台、后台、表人格、里人格。\n"
             "要求：\n"
             "1. pre_line 由平时聊天的南条酱说，只能表现突然犯困、发懵、脑子打结、需要缓一缓；"
             "她本人并不知道后面会有人接手，所以绝对不能提到南条酱、另一个自己、换人、接手、让谁来、谁来处理之类的交接意识，12到22字。\n"
@@ -355,7 +380,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 ),
                 stream=False,
             )
-            data = cls._extract_json_object(getattr(llm_resp, "completion_text", "")) or {}
+            data = (
+                cls._extract_json_object(getattr(llm_resp, "completion_text", "")) or {}
+            )
             raw_pre = data.get("pre_line")
             raw_post = data.get("post_line")
             normalized_pre = cls._normalize_handoff_line(raw_pre, fallback_pre, 28)
@@ -492,14 +519,18 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         if not text:
             return ""
         cleaned = text
-        sentence_pattern = re.compile(r"^\s*([^\n\u3002\uff01\uff1f!?\u2026~\uff5e]{0,42}[\u3002\uff01\uff1f!?\u2026~\uff5e])\s*")
+        sentence_pattern = re.compile(
+            r"^\s*([^\n\u3002\uff01\uff1f!?\u2026~\uff5e]{0,42}[\u3002\uff01\uff1f!?\u2026~\uff5e])\s*"
+        )
         for _ in range(2):
             match = sentence_pattern.match(cleaned)
             if not match:
                 break
             first_sentence = match.group(1).strip()
             remainder = cleaned[match.end() :].lstrip()
-            if not remainder or not cls._looks_like_super_noel_opening_line(first_sentence):
+            if not remainder or not cls._looks_like_super_noel_opening_line(
+                first_sentence
+            ):
                 break
             cleaned = remainder
         return cleaned or text
@@ -517,7 +548,11 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             line = raw_line.strip()
             if trimming and not line:
                 continue
-            if trimming and dropped_non_empty < 2 and cls._looks_like_super_noel_opening_line(line):
+            if (
+                trimming
+                and dropped_non_empty < 2
+                and cls._looks_like_super_noel_opening_line(line)
+            ):
                 dropped_non_empty += 1
                 continue
             trimming = False
@@ -553,19 +588,26 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         handoff_post_line = ""
         suppress_super_noel_bridge = False
         if cls._is_super_noel_handoff(tool):
-            suppress_super_noel_bridge = bool(event.get_extra("super_noel_sticky_active"))
-            if suppress_super_noel_bridge:
+            manual_direct_takeover = cls._looks_like_manual_super_noel_request(input_)
+            suppress_super_noel_bridge = bool(
+                event.get_extra("super_noel_sticky_active")
+            )
+            if manual_direct_takeover:
+                suppress_super_noel_bridge = True
                 logger.info(
-                    "super_noel handoff bridge suppressed for active sticky session"
+                    "super_noel direct takeover enabled for explicit manual request"
                 )
+            if suppress_super_noel_bridge:
+                logger.info("super_noel handoff bridge suppressed")
             else:
-                handoff_pre_line, handoff_post_line = (
-                    await cls._generate_super_noel_bridge_lines(
-                        ctx,
-                        front_prov_id or prov_id,
-                        input_,
-                        bool(image_urls),
-                    )
+                (
+                    handoff_pre_line,
+                    handoff_post_line,
+                ) = await cls._generate_super_noel_bridge_lines(
+                    ctx,
+                    front_prov_id or prov_id,
+                    input_,
+                    bool(image_urls),
                 )
                 await cls._send_handoff_notice(event, handoff_pre_line)
 
@@ -597,7 +639,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 "contexts": contexts,
                 "max_steps": 30,
                 "run_hooks": tool.agent.run_hooks,
-                "stream": ctx.get_config().get("provider_settings", {}).get("stream", False),
+                "stream": ctx.get_config()
+                .get("provider_settings", {})
+                .get("stream", False),
             }
             if cls._is_super_noel_handoff(tool):
                 llm_resp = await cls._run_super_noel_tool_loop(
@@ -646,7 +690,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                             contexts=contexts,
                             max_steps=24,
                             run_hooks=tool.agent.run_hooks,
-                            stream=ctx.get_config().get("provider_settings", {}).get("stream", False),
+                            stream=ctx.get_config()
+                            .get("provider_settings", {})
+                            .get("stream", False),
                         )
                         effective_prov_id = front_prov_id
                         handoff_post_line = downgrade_post
@@ -675,9 +721,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                     handoff_exception or getattr(llm_resp, "completion_text", "")
                 )
                 fail_text = (
-                    "唭，这次接管结果没能顺利落地，"
-                    f"{fail_detail}。"
-                    "你要我重跑一遍吗？"
+                    f"唭，这次接管结果没能顺利落地，{fail_detail}。你要我重跑一遍吗？"
                 )
                 await event.send(MessageChain().message(fail_text))
                 yield None
@@ -702,23 +746,27 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 body_text,
             )
         if cls._is_super_noel_handoff(tool):
-            plain_completion_text = cls._plainify_super_noel_completion_text(completion_text)
+            plain_completion_text = cls._plainify_super_noel_completion_text(
+                completion_text
+            )
             if plain_completion_text != completion_text:
-                logger.info(
-                    "super_noel completion plainified after handoff"
-                )
+                logger.info("super_noel completion plainified after handoff")
             completion_text = plain_completion_text
         if cls._is_super_noel_handoff(tool):
             try:
                 cfg = ctx.get_config(umo=umo)
-                sticky_persona_id, sticky_provider_id = resolve_super_noel_binding_from_config(
-                    cfg,
-                    agent_name=getattr(tool.agent, "name", ""),
+                sticky_persona_id, sticky_provider_id = (
+                    resolve_super_noel_binding_from_config(
+                        cfg,
+                        agent_name=getattr(tool.agent, "name", ""),
+                    )
                 )
                 await activate_super_noel_sticky_session(
                     umo=umo,
                     persona_id=sticky_persona_id,
-                    provider_id=(effective_prov_id or sticky_provider_id or front_prov_id),
+                    provider_id=(
+                        effective_prov_id or sticky_provider_id or front_prov_id
+                    ),
                     settings_source=cfg,
                 )
             except Exception as sticky_exc:

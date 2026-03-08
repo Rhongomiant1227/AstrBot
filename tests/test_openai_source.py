@@ -380,3 +380,23 @@ async def test_handle_api_error_unknown_image_error_raises():
             )
     finally:
         await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_detect_sub2api_force_super_handoff_prefers_explicit_manual_request():
+    provider = _make_provider()
+    try:
+        tool_name, reason = provider._detect_sub2api_force_super_handoff(
+            messages=[{"role": "user", "content": "能不能叫另一个你回来？"}],
+            tool_list=[
+                {
+                    "type": "function",
+                    "function": {"name": "transfer_to_super_noel"},
+                }
+            ],
+            post_tool_phase=False,
+        )
+        assert tool_name == "transfer_to_super_noel"
+        assert reason == "manual_super_noel_request"
+    finally:
+        await provider.terminate()
