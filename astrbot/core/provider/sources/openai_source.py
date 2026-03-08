@@ -2427,6 +2427,7 @@ class ProviderOpenAIOfficial(Provider):
                         func_name_ls.extend(adapter_func_names)
                         tool_call_ids.extend(adapter_tool_call_ids)
                 completion_text = self._strip_sub2api_tool_tag_blocks(completion_text)
+            completion_text = self._plainify_common_latex_markup(completion_text)
             completion_text = self._trim_optional_followup_offer(completion_text)
             if completion_text:
                 llm_response.result_chain = MessageChain().message(completion_text)
@@ -2590,6 +2591,65 @@ class ProviderOpenAIOfficial(Provider):
         return str(raw_content) if raw_content is not None else ""
 
     @staticmethod
+    def _plainify_common_latex_markup(text: str | None) -> str:
+        body = str(text or "")
+        if not body or "\\" not in body:
+            return body
+
+        cleaned = body.replace("\r\n", "\n").replace("\r", "\n")
+        cleaned = re.sub(r"\\\[\s*", "", cleaned)
+        cleaned = re.sub(r"\s*\\\]", "", cleaned)
+        cleaned = re.sub(r"\\\(\s*", "", cleaned)
+        cleaned = re.sub(r"\s*\\\)", "", cleaned)
+
+        unwrap_patterns = (
+            r"\\text\s*\{([^{}]*)\}",
+            r"\\mathrm\s*\{([^{}]*)\}",
+            r"\\operatorname\s*\{([^{}]*)\}",
+            r"\\mathbf\s*\{([^{}]*)\}",
+            r"\\mathit\s*\{([^{}]*)\}",
+            r"\\mathtt\s*\{([^{}]*)\}",
+            r"\\mathbb\s*\{([^{}]*)\}",
+            r"\\mathcal\s*\{([^{}]*)\}",
+        )
+        for _ in range(6):
+            previous = cleaned
+            for pattern in unwrap_patterns:
+                cleaned = re.sub(pattern, r"\1", cleaned)
+            if cleaned == previous:
+                break
+
+        cleaned = re.sub(r"\\n?Longleftrightarrow", "<=>", cleaned)
+        cleaned = re.sub(r"\\n?Leftrightarrow", "<=>", cleaned)
+        cleaned = re.sub(r"\\n?Longrightarrow", "=>", cleaned)
+        cleaned = re.sub(r"\\n?Rightarrow", "=>", cleaned)
+
+        replacements = (
+            ("\\implies", "=>"),
+            ("\\rightarrow", "->"),
+            ("\\to", "->"),
+            ("\\mapsto", "->"),
+            ("\\cdot", "*"),
+            ("\\times", "x"),
+            ("\\leq", "<="),
+            ("\\le", "<="),
+            ("\\geq", ">="),
+            ("\\ge", ">="),
+            ("\\neq", "!="),
+            ("\\approx", "~="),
+            ("\\infty", "inf"),
+            ("\\pm", "+/-"),
+            ("\\sqrt", "sqrt"),
+        )
+        for src, dst in replacements:
+            cleaned = cleaned.replace(src, dst)
+
+        cleaned = re.sub(r"\\([{}%#$&_])", r"\1", cleaned)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
     def _looks_like_optional_followup_start(line: str) -> bool:
         stripped = str(line or "").strip()
         if not stripped:
@@ -2698,6 +2758,7 @@ class ProviderOpenAIOfficial(Provider):
                         llm_response.tools_call_ids = adapter_tool_call_ids
                 completion_text = self._strip_sub2api_tool_tag_blocks(completion_text)
 
+            completion_text = self._plainify_common_latex_markup(completion_text)
             completion_text = self._trim_optional_followup_offer(completion_text)
             if completion_text:
                 llm_response.result_chain = MessageChain().message(completion_text)

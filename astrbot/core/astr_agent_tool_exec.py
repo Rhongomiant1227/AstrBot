@@ -487,6 +487,24 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         return not any(marker in line for marker in content_markers)
 
     @classmethod
+    def _trim_leading_super_noel_opening_sentences(cls, body: str | None) -> str:
+        text = str(body or "").lstrip()
+        if not text:
+            return ""
+        cleaned = text
+        sentence_pattern = re.compile(r"^\s*([^\n\u3002\uff01\uff1f!?\u2026~\uff5e]{0,42}[\u3002\uff01\uff1f!?\u2026~\uff5e])\s*")
+        for _ in range(2):
+            match = sentence_pattern.match(cleaned)
+            if not match:
+                break
+            first_sentence = match.group(1).strip()
+            remainder = cleaned[match.end() :].lstrip()
+            if not remainder or not cls._looks_like_super_noel_opening_line(first_sentence):
+                break
+            cleaned = remainder
+        return cleaned or text
+
+    @classmethod
     def _trim_redundant_super_noel_opening(cls, body: str | None) -> str:
         text = cls._plainify_super_noel_completion_text(body)
         if not text:
@@ -505,6 +523,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             trimming = False
             trimmed.append(raw_line)
         cleaned = "\n".join(trimmed).strip()
+        cleaned = cls._trim_leading_super_noel_opening_sentences(cleaned or text)
         return cleaned or text
 
     @classmethod
@@ -674,10 +693,14 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             if trimmed_body_text != plain_body_text:
                 logger.info("super_noel redundant opening trimmed from body")
             body_text = trimmed_body_text
-        completion_text = cls._prepend_handoff_opening(
-            handoff_post_line,
-            body_text,
-        )
+        if cls._is_super_noel_handoff(tool) and handoff_post_line and body_text:
+            await cls._send_handoff_notice(event, handoff_post_line)
+            completion_text = body_text
+        else:
+            completion_text = cls._prepend_handoff_opening(
+                handoff_post_line,
+                body_text,
+            )
         if cls._is_super_noel_handoff(tool):
             plain_completion_text = cls._plainify_super_noel_completion_text(completion_text)
             if plain_completion_text != completion_text:
