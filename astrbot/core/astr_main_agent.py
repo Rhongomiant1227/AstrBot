@@ -5,6 +5,7 @@ import copy
 import datetime
 import json
 import os
+import re
 import zoneinfo
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
@@ -66,6 +67,190 @@ from astrbot.core.utils.quoted_message_parser import (
     extract_quoted_message_text,
 )
 from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
+
+
+def _looks_like_command_style_input(text: str | None) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    first_line = normalized.splitlines()[0].strip()
+    return bool(re.match(r"^(?:/|\uFF0F)[A-Za-z0-9][A-Za-z0-9_.:-]*(?:\s|$)", first_line))
+
+
+def _looks_like_manual_super_noel_request(text: str | None) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    markers = (
+        "\u53e6\u4e00\u4e2a\u4f60",
+        "\u53e6\u4e00\u4e2a\u5357\u6761\u9171",
+        "\u53e6\u5916\u7684\u90a3\u4e2a\u5357\u6761\u9171",
+        "\u91cc\u5357\u6761\u9171",
+        "\u8d85\u7ea7\u5357\u6761\u9171",
+        "\u66f4\u51b7\u9759\u4e00\u70b9\u7684\u5357\u6761\u9171",
+        "\u66f4\u4e25\u8c28\u4e00\u70b9\u7684\u5357\u6761\u9171",
+        "\u53eb\u53e6\u4e00\u4e2a\u4f60",
+        "\u53eb\u53e6\u4e00\u4e2a\u5357\u6761\u9171",
+        "\u53eb\u91cc\u5357\u6761\u9171",
+        "\u8ba9\u53e6\u4e00\u4e2a\u4f60\u6765",
+        "\u8ba9\u53e6\u4e00\u4e2a\u5357\u6761\u9171\u6765",
+        "\u8ba9\u91cc\u5357\u6761\u9171\u6765",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _should_offer_super_noel_handoff_tool(event: AstrMessageEvent) -> bool:
+    if bool(event.get_extra("matched_command_handler", False)):
+        return False
+    text = str(event.get_message_str() or "")
+    outline = str(event.get_message_outline() or "")
+    has_image = "[\u56fe\u7247]" in outline
+    if not text.strip() and not has_image:
+        return False
+    if _looks_like_command_style_input(text):
+        return False
+    if _looks_like_manual_super_noel_request(text):
+        return True
+
+    lowered = text.lower()
+    compact = re.sub(r"\s+", "", lowered)
+
+    signal_score = 0
+    complexity_keywords = (
+        "\u8bc1\u660e",
+        "\u63a8\u5bfc",
+        "\u8be6\u7ec6\u8fc7\u7a0b",
+        "\u4e0d\u8981\u8df3\u6b65",
+        "\u9010\u6b65",
+        "\u9a8c\u7b97",
+        "\u5b8c\u6574\u89e3\u7b54",
+        "\u6570\u5217",
+        "\u9012\u63a8",
+        "\u6781\u9650",
+        "\u5fae\u79ef\u5206",
+        "\u5bfc\u6570",
+        "\u79ef\u5206",
+        "\u5fae\u5206\u65b9\u7a0b",
+        "\u4e00\u81f4\u6536\u655b",
+        "\u7ea7\u6570",
+        "\u7ebf\u6027\u4ee3\u6570",
+        "\u7279\u5f81\u503c",
+        "\u6982\u7387",
+        "\u7ec4\u5408",
+        "\u8ba1\u6570",
+        "\u7269\u7406",
+        "\u53d7\u529b",
+        "\u7535\u78c1",
+        "\u538b\u8f74",
+        "\u7ade\u8d5b",
+        "\u89c4\u5219\u5224\u65ad",
+        "\u724c\u7406",
+        "\u5411\u542c",
+        "\u542c\u4ec0\u4e48",
+        "\u756a\u7b26",
+        "\u70b9\u6570",
+        "\u4e09\u9ebb",
+        "\u89e3\u9898",
+        "\u89e3\u8fd9\u9898",
+        "\u89e3\u8fd9\u9053\u9898",
+        "\u7ed9\u51fa\u7406\u7531",
+        'prove',
+        'derivation',
+        'detailed',
+        'step by step',
+        'limit',
+        'sequence',
+        'recurrence',
+        'calculus',
+        'integral',
+        'derivative',
+        'uniform convergence',
+        'series',
+        'eigenvalue',
+        'probability',
+        'combinatorics',
+        'counting',
+        'physics',
+        'deadlock',
+        'thread',
+        'concurrency',
+        'debug',
+    )
+    if any(keyword and (keyword in text or keyword in lowered) for keyword in complexity_keywords):
+        signal_score += 2
+
+    notation_patterns = (
+        r"(?:^|[^a-z])(lim|sup|inf|max|min)(?:[^a-z]|$)",
+        r"(?:sin|cos|tan|log|ln|sqrt)(?:\s*\(|\s+[a-z0-9])",
+        r"[?????????]",
+        r"[a-z]_[{(]?[a-z0-9+\-*/]+[})]?",
+        r"\b[a-z]\s*=\s*[a-z0-9_+\-*/()]+",
+        r"\bdy/dx\b|\bd/dx\b|y''|y'",
+        r"\b[0-9]{3,}[mpsz]\b",
+    )
+    notation_hits = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in notation_patterns)
+    if notation_hits >= 2:
+        signal_score += 2
+    elif notation_hits == 1:
+        signal_score += 1
+
+    if len(re.findall(r"(?:^|[\n\r])\s*[\(?]?[1-9][\)?.?]", text)) >= 2:
+        signal_score += 2
+    if len(re.findall(r"\n\s*-\s*", text)) >= 2:
+        signal_score += 1
+    if len(compact) >= 80 and any(ch.isdigit() for ch in compact):
+        signal_score += 1
+
+    if has_image:
+        image_reasoning_markers = (
+            "\u5b8c\u6574\u89e3\u7b54",
+            "\u8be6\u7ec6\u8fc7\u7a0b",
+            "\u4e0d\u8981\u8df3\u6b65",
+            "\u9010\u6b65",
+            "\u6309\u5377\u9762",
+            "\u8bc1\u660e",
+            "\u63a8\u5bfc",
+            "\u89e3\u9898",
+            "\u89e3\u8fd9\u9898",
+            "\u89e3\u8fd9\u9053\u9898",
+            "\u56fe\u91cc\u7684\u9898",
+            "\u56fe\u4e0a\u8fd9\u9898",
+            "\u770b\u56fe\u505a\u9898",
+            "\u5e2e\u6211\u89e3",
+            "\u53d7\u529b",
+            "\u7269\u7406",
+            "\u6570\u5b66",
+            "\u8bd5\u5377",
+            "\u7ade\u8d5b",
+            "\u724c\u7406",
+            "\u5411\u542c",
+            "\u756a\u7b26",
+            "\u70b9\u6570",
+            "\u89c4\u5219\u5224\u65ad",
+        )
+        if any(marker in text for marker in image_reasoning_markers):
+            signal_score += 2
+        elif not text.strip():
+            return False
+
+    if re.search(r"\b[0-9]{3,}[mpsz]\b", lowered) and any(
+        marker in text
+        for marker in (
+            "\u5411\u542c",
+            "\u542c\u4ec0\u4e48",
+            "\u756a\u7b26",
+            "\u70b9\u6570",
+            "\u548c\u724c",
+            "\u724c\u7406",
+            "\u4e09\u9ebb",
+        )
+    ):
+        signal_score += 2
+
+    if any(marker in text for marker in ("\u6b7b\u9501", "\u5e76\u53d1", "\u7ebf\u7a0b")):
+        signal_score += 2
+
+    return signal_score >= 2
 
 
 @dataclass(slots=True)
@@ -388,12 +573,18 @@ async def _ensure_persona_and_skills(
 
         # add subagent handoff tools
         current_persona_is_super_noel = str(persona_id or "") == SUPER_NOEL_PERSONA_ID or bool(event.get_extra("super_noel_sticky_active"))
+        allow_super_noel_handoff_tool = _should_offer_super_noel_handoff_tool(event)
         for tool in so.handoffs:
-            if (
-                current_persona_is_super_noel
-                and getattr(tool, "name", "") == SUPER_NOEL_HANDOFF_TOOL_NAME
-            ):
-                continue
+            tool_name = str(getattr(tool, "name", "") or "")
+            if tool_name == SUPER_NOEL_HANDOFF_TOOL_NAME:
+                if current_persona_is_super_noel:
+                    continue
+                if not allow_super_noel_handoff_tool:
+                    logger.info(
+                        "skip exposing transfer_to_super_noel for non-complex turn: text=%s",
+                        (event.get_message_str() or "")[:120],
+                    )
+                    continue
             req.func_tool.add_tool(tool)
 
         # check duplicates
