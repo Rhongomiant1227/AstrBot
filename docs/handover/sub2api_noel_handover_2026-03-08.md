@@ -221,3 +221,13 @@
 ?????
 - ?????? NAS ?? `astrbot` ????
 - ??? `astr_main_agent.py` ????????
+
+## 2026-03-09 runtime patch export
+- Exported the live NAS patch for `astrbot_plugin_astrbot_enhance_mode` into the repo for version control.
+- Versioned files:
+  - `runtime_patches/astrbot_plugin_astrbot_enhance_mode/main.py`
+  - `runtime_patches/astrbot_plugin_astrbot_enhance_mode/README.md`
+  - `scripts/apply_enhance_mode_runtime_patch.py`
+- Purpose:
+  - preserve the `model_choice` adaptive budget / overflow retry / timeout retry logic
+  - make the runtime patch re-applicable after container rebuilds
