@@ -231,3 +231,23 @@
 - Purpose:
   - preserve the `model_choice` adaptive budget / overflow retry / timeout retry logic
   - make the runtime patch re-applicable after container rebuilds
+
+## 2026-03-10 sticky super_noel speaker guard
+- Root cause:
+  - after `super_noel` handoff, sticky follow-up turns were correctly staying on the super persona
+  - but the reply style could still drift into ambiguous third-person narration such as `另一边那位`, `另一只`, `我们俩`, `两只南条酱`
+  - this made it unclear which Noel was currently speaking, even though the sticky session was active
+- Core fix:
+  - file: `astrbot/core/astr_main_agent.py`
+  - added `SUPER_NOEL_STICKY_FRONT_STAGE_PROMPT`
+  - added `_append_super_noel_sticky_speaker_guard(event, req)`
+  - when `event.extra.super_noel_sticky_active == True`, inject an extra system prompt guard that forces the current speaker to stay clearly in front
+- Intended effect:
+  - sticky super Noel should speak as the current front speaker
+  - if she mentions regular Noel, she should refer to her as `她`
+  - avoid `另一边那位`, `另一只`, `我们俩`, `两只南条酱`, `我们都会...` style wording unless the user explicitly wants a joint in-character performance
+- Validation:
+  - local `py_compile` passed for `astr_main_agent.py`
+  - remote NAS container `py_compile` passed for `/AstrBot/astrbot/core/astr_main_agent.py`
+  - container restarted successfully
+  - local helper test confirmed the guard is appended only when `super_noel_sticky_active=True`

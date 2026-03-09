@@ -69,6 +69,20 @@ from astrbot.core.utils.quoted_message_parser import (
 from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
 
 
+SUPER_NOEL_STICKY_FRONT_STAGE_PROMPT = """
+# Sticky Speaker Guard
+
+You are currently the speaker in front for this reply.
+
+- Keep the speaking identity clear from the first sentence.
+- Do not narrate as if two sides are speaking together.
+- Do not use phrasing like \"\u53e6\u4e00\u8fb9\u90a3\u4f4d\", \"\u53e6\u4e00\u53ea\", \"\u6211\u4eec\u4fe9\", \"\u4e24\u53ea\u5357\u6761\u9171\", \"\u6211\u4eec\u90fd\u4f1a\" unless the user explicitly asks for a joint in-character performance.
+- If you need to mention the ordinary Noel, refer to her simply as \"\u5979\".
+- If the user addresses both of you at once, still answer only as the current speaker. You may briefly acknowledge that she also heard it, but do not guess or roleplay what she \"would say\".
+- Avoid third-person narration about yourself.
+"""
+
+
 def _looks_like_command_style_input(text: str | None) -> bool:
     normalized = str(text or "").strip()
     if not normalized:
@@ -785,6 +799,15 @@ def _append_system_reminders(
         req.extra_user_content_parts.append(TextPart(text=system_content))
 
 
+def _append_super_noel_sticky_speaker_guard(
+    event: AstrMessageEvent,
+    req: ProviderRequest,
+) -> None:
+    if not bool(event.get_extra("super_noel_sticky_active", False)):
+        return
+    req.system_prompt += f"\n{SUPER_NOEL_STICKY_FRONT_STAGE_PROMPT}\n"
+
+
 async def _decorate_llm_request(
     event: AstrMessageEvent,
     req: ProviderRequest,
@@ -823,6 +846,7 @@ async def _decorate_llm_request(
     if tz is None:
         tz = plugin_context.get_config().get("timezone")
     _append_system_reminders(event, req, cfg, tz)
+    _append_super_noel_sticky_speaker_guard(event, req)
 
 
 def _supports_virtual_tool_use(provider: Provider) -> bool:
