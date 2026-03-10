@@ -290,8 +290,8 @@ class SendMessageToUserTool(FunctionTool[AstrAgentContext]):
 
             try:
                 if msg_type == "plain":
-                    text = str(msg.get("text", "")).strip()
-                    if not text:
+                    text = str(msg.get("text", ""))
+                    if not text.strip():
                         return f"error: messages[{idx}].text is required for plain component."
                     components.append(Comp.Plain(text=text))
                 elif msg_type == "image":

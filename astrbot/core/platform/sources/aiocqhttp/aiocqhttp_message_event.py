@@ -6,6 +6,7 @@ from aiocqhttp import CQHttp, Event
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import (
+    At,
     BaseMessageComponent,
     File,
     Image,
@@ -33,6 +34,8 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
     @staticmethod
     async def _from_segment_to_dict(segment: BaseMessageComponent) -> dict:
         """修复部分字段"""
+        if isinstance(segment, Plain):
+            return await segment.to_dict()
         if isinstance(segment, Image | Record):
             # For Image and Record segments, we convert them to base64
             bs64 = await segment.convert_to_base64()
@@ -69,9 +72,29 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
     async def _parse_onebot_json(message_chain: MessageChain):
         """解析成 OneBot json 格式"""
         ret = []
-        for segment in message_chain.chain:
+        segments = list(message_chain.chain)
+        for idx, segment in enumerate(segments):
             if isinstance(segment, Plain):
-                if not segment.text.strip():
+                text = segment.text
+                if not text.strip():
+                    prev_segment = segments[idx - 1] if idx > 0 else None
+                    next_segment = segments[idx + 1] if idx + 1 < len(segments) else None
+                    if not isinstance(prev_segment, At) and not isinstance(
+                        next_segment,
+                        At,
+                    ):
+                        continue
+                elif idx > 0 and isinstance(segments[idx - 1], At):
+                    if not text[:1].isspace():
+                        segment = Plain(text=f" {text}", convert=segment.convert)
+                elif idx + 1 < len(segments) and isinstance(segments[idx + 1], At):
+                    if not text[-1:].isspace():
+                        segment = Plain(text=f"{text} ", convert=segment.convert)
+            elif isinstance(segment, At):
+                next_segment = segments[idx + 1] if idx + 1 < len(segments) else None
+                if next_segment is None:
+                    ret.append(await AiocqhttpMessageEvent._from_segment_to_dict(segment))
+                    ret.append({"type": "text", "data": {"text": " "}})
                     continue
             d = await AiocqhttpMessageEvent._from_segment_to_dict(segment)
             ret.append(d)

@@ -251,3 +251,36 @@
   - remote NAS container `py_compile` passed for `/AstrBot/astrbot/core/astr_main_agent.py`
   - container restarted successfully
   - local helper test confirmed the guard is appended only when `super_noel_sticky_active=True`
+
+## 2026-03-11 future-task group @ mention fix
+- Symptom:
+  - scheduled reminder messages in QQ groups were rendered like `@叶子国际新闻简报来啦～`
+  - the target user saw visible `@name` text but did not receive a real QQ mention ping
+  - the missing separator strongly suggested the outgoing OneBot segment chain lost the whitespace after `At`
+- Root cause:
+  - file: `astrbot/core/astr_main_agent_resources.py`
+  - `send_message_to_user` stripped plain text with `.strip()`, so leading spaces prepared for `At + text` were discarded before building `MessageChain`
+  - file: `astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py`
+  - `_parse_onebot_json()` dropped whitespace-only `Plain` segments
+  - outgoing `Plain` segments were serialized through `toDict()`, which also trimmed leading/trailing whitespace
+- Core fix:
+  - `astrbot/core/astr_main_agent_resources.py`
+    - keep original plain text content
+    - only use `text.strip()` for validation, not for mutation
+  - `astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py`
+    - import `At` for adjacency checks
+    - serialize `Plain` with `to_dict()` so leading/trailing whitespace is preserved
+    - keep whitespace `Plain` segments when they sit next to an `At`
+    - auto-insert a separating space when text is adjacent to an `At` but the text itself does not start/end with whitespace
+    - if an `At` is sent alone at the end of the chain, append a fallback single-space text segment
+- Scope:
+  - fixes proactive reminder messages
+  - also improves any other OneBot/aiocqhttp active-send path that uses `At + Plain`
+  - limited to the QQ/OneBot adapter path; other platform adapters are untouched
+- Validation:
+  - local `py_compile` passed for:
+    - `astrbot/core/astr_main_agent_resources.py`
+    - `astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py`
+  - remote NAS container patched in place
+  - remote container `py_compile` passed for both files
+  - remote `astrbot` container restarted successfully and returned to healthy startup state
